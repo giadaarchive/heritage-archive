@@ -236,22 +236,71 @@ Every function in `notion.py` and `analytics.py` takes a `cfg` dict (the user's 
 
 ---
 
-## What needs to happen next (V2 considerations)
+## What needs to happen next
 
-**Immediately:**
+**Immediately (before first beta tester):**
 - Push repo to GitHub so testers can clone it
 - Add `Fits` rollup and `CPW` formula to the live template workspace manually
 - Run a real end-to-end test with a real bot token
 
 **Before open-source:**
-- Replace `setup_notion_template.py` (old, hardcoded) with `workspace_setup.py` as the canonical setup path — or delete the old file
-- Decide on Notion OAuth vs integration token — OAuth removes the "create integration" step entirely but requires a web server for the callback
-- Bulk add flow: camera roll scan → identify items in multiple images → batch-add drafts to Notion
+- Replace `setup_notion_template.py` (old, hardcoded) with `workspace_setup.py` as the canonical path — or delete the old file
+- Decide on Notion OAuth vs integration token — OAuth removes the "create integration" step but requires a web server for the callback
+- Bulk add flow: camera roll scan → identify items → batch-add drafts to Notion
 - `/add` command: manually add an item from Telegram without a photo
 
-**V2 features (user requests will clarify priority):**
-- Outfit story generation (OOTD story written by AI, added to Lookbook)
-- Price tracking (bought at X, retail is Y, you saved Z)
-- Sell suggestions (high CPW + long idle = candidate to sell)
-- Seasonal packing list (what to pull out / put away)
-- Style patterns (what colours/categories you reach for most)
+---
+
+## Future ideas (not scoped, in no particular order)
+
+Everything below is explicitly out of V1 scope. Captured here so the ideas don't get lost. Prioritise based on what beta testers ask for first.
+
+### Item depth
+
+- **Care instructions** — Wash method, wash temperature, drying, storage (hang/fold/dust bag), ironing. Removed from V1 for friction reasons. Add back as a separate "care card" view in Notion, filled in optionally.
+- **Why I Own It** — Structured tags: quality material, timeless silhouette, investment piece, sentimental, gifted, rare find, vintage provenance, travel-worthy, craftsmanship. Useful for understanding purchase patterns over time.
+- **What I'd Change** — Tags for friction or regret: sizing wrong, doesn't integrate with wardrobe, wrong colour, wrong fabric for use case, price not justified, logo fatigue. Pairs with Why I Own It for a complete item debrief.
+- **Condition tracking** — Current condition (mint / excellent / good / fair / worn out). Useful for knowing when something needs repair, cleaning, or retirement.
+- **Provenance / heritage notes** — AI-generated notes on the brand, the piece, the era it was made. Already built for askgiada; bring into Heritage Archive for the wardrobe context.
+- **Repair log** — Date, what was repaired, cost, where (tailor, cobbler, at-home). Feeds into true total cost of ownership.
+- **Alteration notes** — What was altered (hemmed, taken in, relined) and by whom.
+- **Authentication** — For high-value pieces: serial numbers, authentication certificates, provenance photos. Stored in Notion, referenced in the item record.
+
+### Wardrobe intelligence
+
+- **Outfit story generation** — After logging an OOTD, AI writes a short editorial caption (100–150 words) and adds it to the Lookbook entry. Already built for personal Substack; adapt for multi-user.
+- **Style pattern analysis** — What colours, categories, designers do you reach for most? What's your actual colour palette vs. what you think it is? Weekly/monthly breakdown.
+- **Personal style identification** — Based on wear history and item metadata, infer a style profile: minimalist / classic / eclectic / maximalist / etc. Not a label — a description of patterns.
+- **Seasonal wardrobe review** — At the start of each season, bot prompts: "You haven't worn 23 items since last AW. Here are the 5 you're least likely to wear again. Want to review them?"
+- **Capsule suggestions** — From your existing wardrobe, identify a 10-piece capsule that covers the most outfit combinations. Show the math.
+- **Dead weight report** — Monthly summary of items not worn in 12+ months. Suggested actions: sell, donate, move to archive, restyle.
+- **Sell suggestions** — Items where the resale value is still meaningful and the CPW is high. Suggested with price range from resale comps.
+
+### Styling
+
+- **How to style a specific piece** — User asks "how do I style this camel coat?" → AI generates 5 outfit ideas using pieces already in their wardrobe. Cross-references catalog, stays within what they own.
+- **Outfit gap analysis** — "You have a great selection of tops but no occasion trousers. These 3 gaps explain why 40% of your dresses never get worn."
+- **Occasion dressing** — User types "I need an outfit for a garden wedding" → bot proposes 3 outfits from existing items with styling notes.
+- **Trend matching** — Current season trends (AW/SS) matched against what you already own. "This season's big colour is chocolate brown. You have 4 pieces. Here's how to use them."
+- **How-to-style templates** — Recurring outfit formulas (e.g. "silk blouse + tailored trouser + loafer") mapped to items in your specific wardrobe.
+- **New item integration** — When a new item is added: "This piece works with 12 things you already own. Here are the 3 best combinations."
+
+### Social / publishing
+
+- **OOTD publishing** — Export an outfit log entry as a formatted post (Substack, Ghost, Markdown). AI writes the story. User edits and publishes.
+- **Wardrobe public profile** — Opt-in shareable version of your wardrobe stats: coverage %, CPW, style breakdown. No item details unless explicitly shared.
+- **Style evolution timeline** — Year-by-year view of how your wardrobe and wearing patterns have changed. Visual and narrative.
+
+### Data and ownership
+
+- **Full export** — Everything in CSV, JSON, or Markdown. Items, OOTD log, corrections, analytics history.
+- **Import from other apps** — Stylebook, Whering, Cladwell — if they export, Heritage Archive should be able to import.
+- **Price history** — Track what you paid, what retail was, what it's worth now (resale comps). Total portfolio value.
+
+### Technical / infrastructure
+
+- **Notion OAuth** — Replace manual integration token with OAuth flow. User clicks "Connect Notion," authorises, done. Requires a web server for the callback but eliminates the integration creation step entirely.
+- **Web UI** — Minimal interface for viewing wardrobe, browsing OOTD history, and accessing analytics outside Telegram.
+- **SQLite backend** — For users who don't want Notion. Same interface, local storage. Full data ownership, no API rate limits.
+- **Ollama support** — Local vision model (LLaVA or Qwen-VL) for users who want outfit identification without sending photos to any external API. Zero marginal cost, lower accuracy.
+- **Bulk import** — Camera roll scan → identify items in multiple photos → batch-add drafts. The biggest onboarding accelerator.
