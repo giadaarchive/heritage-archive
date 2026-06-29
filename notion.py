@@ -224,8 +224,8 @@ def create_ootd_entry(cfg: dict, date_str: str, item_ids: list[str],
         "Worn": {"date": {"start": date_str}},
         items_key: {"relation": [{"id": pid} for pid in item_ids]},
     }
-    if season in ("SS", "AW"):
-        properties["Style"] = {"select": {"name": season}}
+    if season in ("SS", "AW", "Year-round", "Resort"):
+        properties["Season"] = {"select": {"name": season}}
 
     body: dict = {"parent": {"database_id": db_id}, "properties": properties}
 
