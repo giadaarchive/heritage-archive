@@ -283,6 +283,31 @@ async def handle_registration_text(update: Update, context: ContextTypes.DEFAULT
                 reply_markup=InlineKeyboardMarkup(buttons),
             )
 
+    elif step == "notion_page":
+        # User typed a page name instead of pressing a button — match against candidates
+        candidates = partial.get("_page_candidates", [])
+        query = text.strip().lower()
+        matches = [p for p in candidates if query in p["title"].lower()]
+        if len(matches) == 1:
+            page = matches[0]
+            status = await update.message.reply_text(
+                f"Got it — building workspace inside <b>{_esc(page['title'])}</b>...",
+                parse_mode=ParseMode.HTML,
+            )
+            await _run_workspace_setup(user_id, update.message, status, partial["notion_token"], page["id"], page["title"], partial)
+        elif len(matches) > 1:
+            buttons = [[InlineKeyboardButton(p["title"][:60], callback_data=f"reg_page:{p['id']}")] for p in matches[:8]]
+            await update.message.reply_text(
+                f"Found {len(matches)} pages matching <b>{_esc(text)}</b>. Which one?",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(buttons),
+            )
+        else:
+            await update.message.reply_text(
+                f"No page found matching <b>{_esc(text)}</b>. Please tap one of the buttons above, or type the exact page name.",
+                parse_mode=ParseMode.HTML,
+            )
+
     elif step == "ai_key":
         partial["ai_key"] = text
         await _ask_kimi_key(update, user_id, partial)

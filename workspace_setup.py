@@ -76,6 +76,10 @@ def find_accessible_pages(token: str) -> list[dict]:
         for result in r.json().get("results", []):
             if result.get("object") != "page":
                 continue
+            # Skip pages that are rows inside a database — only show top-level pages
+            parent = result.get("parent", {})
+            if parent.get("type") == "database_id":
+                continue
             props = result.get("properties", {})
             title_prop = next((v for v in props.values() if v.get("type") == "title"), None)
             title = ""
