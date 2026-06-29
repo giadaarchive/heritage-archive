@@ -12,7 +12,6 @@ from pathlib import Path
 from config import DATA_DIR
 
 IDEAS_FILE = DATA_DIR / "ideas.json"
-DIGEST_INTERVAL_DAYS = 14
 
 
 def _load() -> dict:
@@ -70,24 +69,3 @@ def format_list() -> str:
     return "\n".join(lines)
 
 
-def due_for_digest() -> bool:
-    """True if digest should be sent today."""
-    data = _load()
-    if not data["ideas"]:
-        return False
-    last = data.get("last_digest")
-    if not last:
-        # First digest: send 14 days after the earliest idea was added
-        earliest = min(i["added"] for i in data["ideas"])
-        from datetime import datetime
-        earliest_date = datetime.fromisoformat(earliest).date()
-        return (date.today() - earliest_date).days >= DIGEST_INTERVAL_DAYS
-    from datetime import datetime
-    last_date = datetime.fromisoformat(last).date()
-    return (date.today() - last_date).days >= DIGEST_INTERVAL_DAYS
-
-
-def mark_digest_sent():
-    data = _load()
-    data["last_digest"] = date.today().isoformat()
-    _save(data)
