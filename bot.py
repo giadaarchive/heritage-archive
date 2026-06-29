@@ -39,6 +39,7 @@ import vision as vision_mod
 import notion
 import analytics
 import workspace_setup
+import ideas as ideas_mod
 
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
@@ -431,6 +432,13 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    is_owner = update.effective_user.id == config.BOT_OWNER_ID
+    owner_cmds = (
+        "\n\n<b>Owner only</b>\n"
+        "/idea &lt;text&gt; — save a future idea\n"
+        "/ideas — view all saved ideas\n"
+        "/idea remove &lt;id&gt; — remove an idea"
+    ) if is_owner else ""
     await update.message.reply_text(
         "<b>Heritage Archive commands</b>\n\n"
         "📸 <b>Send a photo</b> — log today's outfit\n\n"
@@ -439,7 +447,8 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/stats — coverage, CPW, dead weight, health score\n"
         "/always — items always added to every OOTD\n"
         "/register — connect Notion + AI provider\n"
-        "/help — this message",
+        "/help — this message"
+        + owner_cmds,
         parse_mode=ParseMode.HTML,
     )
 
@@ -550,6 +559,63 @@ async def cmd_always(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text("Usage: /always | /always add <search> | /always remove <name> | /always clear")
+
+
+# ── Ideas / future backlog ────────────────────────────────────────────────────
+
+async def cmd_idea(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /idea <text>          — add a new idea
+    /idea list            — same as /ideas
+    /idea remove <id>     — remove idea by number
+    """
+    user_id = update.effective_user.id
+    if user_id != config.BOT_OWNER_ID:
+        return
+    args = context.args
+
+    if not args or args[0] == "list":
+        await update.message.reply_text(ideas_mod.format_list(), parse_mode=ParseMode.HTML)
+        return
+
+    if args[0] == "remove":
+        if len(args) < 2 or not args[1].isdigit():
+            await update.message.reply_text("Usage: /idea remove <id>")
+            return
+        removed = ideas_mod.remove(int(args[1]))
+        await update.message.reply_text("Removed." if removed else "ID not found.")
+        return
+
+    text = " ".join(args)
+    idea = ideas_mod.add(text)
+    total = len(ideas_mod.all_ideas())
+    await update.message.reply_text(
+        f"💡 Saved: <i>{_esc(idea['text'])}</i>\n<code>#{idea['id']}</code>  ·  {total} idea{'s' if total != 1 else ''} total",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def cmd_ideas(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != config.BOT_OWNER_ID:
+        return
+    await update.message.reply_text(ideas_mod.format_list(), parse_mode=ParseMode.HTML)
+
+
+async def _send_ideas_digest(context: ContextTypes.DEFAULT_TYPE):
+    """Daily check: send bi-weekly ideas digest to bot owner when due."""
+    if not ideas_mod.due_for_digest():
+        return
+    all_i = ideas_mod.all_ideas()
+    lines = ["<b>Heritage Archive — ideas digest</b>\n"]
+    for idea in all_i:
+        lines.append(f"• [{idea['id']}] {idea['text']}")
+    lines.append(f"\n<i>{len(all_i)} idea{'s' if len(all_i) != 1 else ''} · /ideas to view · /idea remove &lt;id&gt; to clear</i>")
+    await context.bot.send_message(
+        chat_id=config.BOT_OWNER_ID,
+        text="\n".join(lines),
+        parse_mode=ParseMode.HTML,
+    )
+    ideas_mod.mark_digest_sent()
 
 
 # ── Photo handling ────────────────────────────────────────────────────────────
@@ -1312,12 +1378,24 @@ def main():
     app.add_handler(CommandHandler("refresh", cmd_refresh))
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("always", cmd_always))
+    app.add_handler(CommandHandler("idea", cmd_idea))
+    app.add_handler(CommandHandler("ideas", cmd_ideas))
 
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.Document.IMAGE, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     app.add_handler(CallbackQueryHandler(handle_callback))
+
+    # Bi-weekly ideas digest — fires every 14 days, daily check at 09:00
+    if app.job_queue and config.BOT_OWNER_ID:
+        import datetime as dt
+        app.job_queue.run_daily(
+            _send_ideas_digest,
+            time=dt.time(hour=9, minute=0),
+            days=(0, 1, 2, 3, 4, 5, 6),
+            name="ideas_digest_check",
+        )
 
     print("Heritage Archive bot running...", flush=True)
     app.run_polling(drop_pending_updates=True)
