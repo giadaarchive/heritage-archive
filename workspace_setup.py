@@ -61,31 +61,43 @@ def _sel(name: str) -> dict:
 
 def find_accessible_pages(token: str) -> list[dict]:
     """
-    Returns all pages the integration can access, as list of {id, title}.
-    The user must have shared at least one page with the integration.
+    Returns top-level pages and databases the integration can access, as list of {id, title}.
+    Excludes pages that are rows inside a database (parent.type == database_id).
     """
     try:
-        r = requests.post(
-            "https://api.notion.com/v1/search",
-            headers=_h(token),
-            json={"filter": {"value": "page", "property": "object"}, "page_size": 20},
-            timeout=20,
-        )
-        r.raise_for_status()
+        results = []
+        for obj_type in ("page", "database"):
+            r = requests.post(
+                "https://api.notion.com/v1/search",
+                headers=_h(token),
+                json={"filter": {"value": obj_type, "property": "object"}, "page_size": 20},
+                timeout=20,
+            )
+            r.raise_for_status()
+            results.extend(r.json().get("results", []))
+
         pages = []
-        for result in r.json().get("results", []):
-            if result.get("object") != "page":
+        seen = set()
+        for result in results:
+            rid = result.get("id", "")
+            if rid in seen:
                 continue
-            # Skip pages that are rows inside a database — only show top-level pages
+            # Skip pages that are rows inside a database
             parent = result.get("parent", {})
             if parent.get("type") == "database_id":
                 continue
-            props = result.get("properties", {})
-            title_prop = next((v for v in props.values() if v.get("type") == "title"), None)
-            title = ""
-            if title_prop:
-                title = "".join(t.get("plain_text", "") for t in title_prop.get("title", []))
-            pages.append({"id": result["id"], "title": title or "(untitled)"})
+            obj = result.get("object")
+            if obj == "page":
+                props = result.get("properties", {})
+                title_prop = next((v for v in props.values() if v.get("type") == "title"), None)
+                title = ""
+                if title_prop:
+                    title = "".join(t.get("plain_text", "") for t in title_prop.get("title", []))
+            else:  # database
+                title_parts = result.get("title", [])
+                title = "".join(t.get("plain_text", "") for t in title_parts)
+            seen.add(rid)
+            pages.append({"id": rid, "title": title or "(untitled)"})
         return pages
     except Exception:
         return []
