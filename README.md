@@ -19,36 +19,14 @@ That's it. No servers, no Docker, no VPS.
 
 ## Setup (10 minutes)
 
-### 1. Duplicate the Notion template
-
-[→ Notion template link] *(will be added when beta launches)*
-
-Open it, click "Duplicate" in the top right, and save it to your workspace.
-
-### 2. Create a Notion integration
-
-1. Go to [notion.so/my-integrations](https://www.notion.so/my-integrations)
-2. Click "New integration"
-3. Name it "Heritage Archive"
-4. Copy the integration token (starts with `secret_`)
-5. Open your duplicated template → click the `...` menu → "Add connections" → add your integration to both the **Wardrobe** and **OOTD** databases
-
-### 3. Find your database IDs
-
-Open each Notion database. The ID is in the URL:
-```
-https://notion.so/your-workspace/DATABASE_ID?v=...
-```
-The ID is the 32-character string. Copy both: the Wardrobe Items ID and the OOTD ID.
-
-### 4. Create a Telegram bot
+### 1. Create a Telegram bot
 
 1. Open Telegram and message [@BotFather](https://t.me/BotFather)
 2. Send `/newbot`
 3. Follow the prompts (name it anything)
 4. Copy the bot token
 
-### 5. Install and configure
+### 2. Install and run
 
 ```bash
 git clone https://github.com/yourusername/heritage-archive
@@ -59,19 +37,32 @@ source venv/bin/activate
 pip install -r requirements.txt
 
 cp .env.example .env
-# Edit .env: add your TELEGRAM_BOT_TOKEN and an AI key
-# Set BOT_OWNER_ID to your Telegram user ID (find it via @userinfobot)
-```
+# Edit .env:
+#   TELEGRAM_BOT_TOKEN=   ← your BotFather token
+#   BOT_OWNER_ID=         ← your Telegram user ID (find it via @userinfobot)
+#   ANTHROPIC_API_KEY=    ← your AI key (at least one required)
 
-### 6. Run the bot
-
-```bash
 python3 bot.py
 ```
 
-### 7. Register in Telegram
+### 3. Register in Telegram
 
-Open your bot in Telegram and send `/register`. It will walk you through connecting your Notion workspace.
+Open your bot and send `/register`. The bot will:
+
+1. Ask you to create a Notion integration at [notion.so/my-integrations](https://www.notion.so/my-integrations) (takes ~2 minutes)
+2. Ask you to create a blank Notion page and share it with the integration
+3. Build your entire Notion workspace automatically — 6 databases, pre-populated with designers, materials, colours, and seasons
+4. Ask which AI provider you want to use
+
+That's it. No template to duplicate, no database IDs to find.
+
+### 4. One manual Notion step
+
+After setup, open **My Wardrobe** in Notion and add two properties the API can't create:
+- **Fits** — Rollup counting entries from the Items back-relation (Count all)
+- **CPW** — Formula: `if(prop("Fits") > 0, prop("Purchase Price") / prop("Fits"), prop("Purchase Price"))`
+
+The ⚙️ Setup Notes page inside your workspace has step-by-step instructions.
 
 ---
 
