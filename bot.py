@@ -285,18 +285,12 @@ async def handle_registration_text(update: Update, context: ContextTypes.DEFAULT
 
     elif step == "ai_key":
         partial["ai_key"] = text
-        user_store.reg_set(user_id, "github", partial)
-        buttons = [
-            [InlineKeyboardButton("Yes, use GitHub for photo storage", callback_data="reg_github:yes")],
-            [InlineKeyboardButton("Skip — use free image hosting", callback_data="reg_github:skip")],
-        ]
-        await update.message.reply_text(
-            "<b>Almost done.</b> Where should outfit photos be stored?\n\n"
-            "GitHub (recommended) — photos are permanent in your own repo.\n"
-            "Free hosting — anonymous, no account needed, but links may expire.",
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(buttons),
-        )
+        await _ask_kimi_key(update, user_id, partial)
+
+    elif step == "kimi_key":
+        if text.lower() not in ("skip", "s", "-"):
+            partial["kimi_key"] = text
+        await _ask_github(update, user_id, partial)
 
     elif step == "github_token":
         partial["github_token"] = text
@@ -319,6 +313,35 @@ def _format_db_id(raw: str) -> str:
     """Format 32-char ID into dashed Notion UUID."""
     r = raw.replace("-", "")
     return f"{r[:8]}-{r[8:12]}-{r[12:16]}-{r[16:20]}-{r[20:]}"
+
+
+async def _ask_kimi_key(update, user_id: int, partial: dict):
+    user_store.reg_set(user_id, "kimi_key", partial)
+    buttons = [[InlineKeyboardButton("Skip", callback_data="reg_kimi:skip")]]
+    await update.message.reply_text(
+        "Optional: <b>Kimi API key</b> (moonshot-v1-32k) for catalog matching.\n\n"
+        "If set, Kimi handles the cheaper text step; your main AI key handles vision only.\n"
+        "Get a key at <code>platform.moonshot.cn</code> → API Keys.\n\n"
+        "Paste your key or tap Skip:",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+async def _ask_github(update, user_id: int, partial: dict):
+    user_store.reg_set(user_id, "github", partial)
+    buttons = [
+        [InlineKeyboardButton("Yes, use GitHub for photo storage", callback_data="reg_github:yes")],
+        [InlineKeyboardButton("Skip — use free image hosting", callback_data="reg_github:skip")],
+    ]
+    msg_obj = update.message if hasattr(update, "message") else update
+    await msg_obj.reply_text(
+        "<b>Almost done.</b> Where should outfit photos be stored?\n\n"
+        "GitHub — permanent, in your own repo.\n"
+        "Free hosting — no account needed, but links may expire.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
 
 
 async def _finish_registration(update_or_query, user_id: int, partial: dict):
@@ -971,16 +994,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reg["partial"]["ai_provider"] = provider
         if provider == "bot":
             reg["partial"]["ai_key"] = ""
-            user_store.reg_set(user_id, "github", reg["partial"])
-            buttons = [
-                [InlineKeyboardButton("Yes, use GitHub for photo storage", callback_data="reg_github:yes")],
-                [InlineKeyboardButton("Skip — use free image hosting", callback_data="reg_github:skip")],
-            ]
+            user_store.reg_set(user_id, "kimi_key", reg["partial"])
+            buttons = [[InlineKeyboardButton("Skip", callback_data="reg_kimi:skip")]]
             await _safe_edit(query,
-                "Using the bot's shared AI key.\n\n"
-                "Where should outfit photos be stored?\n\n"
-                "GitHub — permanent, in your own repo.\n"
-                "Free hosting — no account needed.",
+                "Using the bot's shared AI key for vision.\n\n"
+                "Optional: add a <b>Kimi key</b> for cheaper text matching "
+                "(platform.moonshot.cn → API Keys), or skip:",
+                parse_mode=ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup(buttons),
             )
         else:
@@ -1003,6 +1023,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Send me your GitHub personal access token (needs repo write permission).\n\n"
                 "Get one at github.com → Settings → Developer settings → Personal access tokens"
             )
+        return
+
+    if data.startswith("reg_kimi:"):
+        reg = user_store.reg_get(user_id)
+        if not reg:
+            await _safe_edit(query, "Registration session expired. Run /register again.")
+            return
+        # Skip — go straight to GitHub
+        await _safe_edit(query, "Kimi skipped.")
+        await _ask_github(query.message, user_id, reg["partial"])
         return
 
     # Always-worn add callback

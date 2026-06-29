@@ -18,6 +18,7 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 BOT_ANTHROPIC_KEY    = os.environ.get("ANTHROPIC_API_KEY", "")
 BOT_OPENAI_KEY       = os.environ.get("OPENAI_API_KEY", "")
 BOT_OPENROUTER_KEY   = os.environ.get("OPENROUTER_API_KEY", "")
+BOT_KIMI_KEY         = os.environ.get("KIMI_API_KEY", "")
 
 # Telegram user ID of the bot owner (can register other users via /admin_add)
 BOT_OWNER_ID = int(os.environ.get("BOT_OWNER_ID", "0"))
