@@ -38,6 +38,7 @@ import corrections
 import vision as vision_mod
 import notion
 import analytics
+import workspace_setup
 
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
@@ -119,27 +120,33 @@ _media_groups: dict[str, dict] = {}     # album buffers
 
 # ── Registration wizard ───────────────────────────────────────────────────────
 
+_NOTION_INSTRUCTIONS = (
+    "<b>Welcome to Heritage Archive.</b>\n\n"
+    "I'll build your entire Notion workspace automatically — no template to copy, "
+    "no database IDs to find.\n\n"
+    "<b>Two quick steps in Notion:</b>\n\n"
+    "1. Go to <a href=\"https://www.notion.so/my-integrations\">notion.so/my-integrations</a>\n"
+    "   → New integration → name it <i>Heritage Archive</i> → Submit\n"
+    "   → Copy the token (starts with <code>ntn_</code>)\n\n"
+    "2. In Notion, create a blank page (name it anything — \"Heritage Archive\" works).\n"
+    "   Open it → click <b>···</b> top right → <b>Connections</b> → add <i>Heritage Archive</i>\n\n"
+    "Then paste the integration token here:"
+)
+
+
 async def cmd_register(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_store.is_registered(user_id):
         await update.message.reply_text(
             "You're already set up. Send a photo to log an outfit, or /stats to see your analytics.\n\n"
-            "To re-register, type /register_reset (this clears your credentials)."
+            "To start over: /register_reset",
         )
         return
-
     user_store.reg_set(user_id, "notion_token", {})
     await update.message.reply_text(
-        "<b>Welcome to Heritage Archive.</b>\n\n"
-        "Let's connect your Notion workspace. You'll need:\n"
-        "• A Notion integration token (<code>secret_...</code>)\n"
-        "• Your Wardrobe Items database ID\n"
-        "• Your OOTD/Lookbook database ID\n"
-        "• An AI API key (Anthropic, OpenAI, or OpenRouter)\n\n"
-        "Don't have a Notion template yet? Duplicate the Heritage Archive template first, "
-        "then come back here.\n\n"
-        "<b>Step 1 of 5:</b> Send me your Notion integration token:",
+        _NOTION_INSTRUCTIONS,
         parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
     )
 
 
@@ -156,7 +163,69 @@ async def cmd_register_reset(update: Update, context: ContextTypes.DEFAULT_TYPE)
         user_store.save(user_id, cfg)
     user_store.reg_set(user_id, "notion_token", {})
     await update.message.reply_text(
-        "Registration cleared. Send me your Notion integration token to start over:"
+        _NOTION_INSTRUCTIONS,
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+    )
+
+
+async def _run_workspace_setup(
+    user_id: int, reply_msg, status_msg, token: str, page_id: str, page_title: str, partial: dict
+):
+    """
+    Run workspace creation in a thread executor with live progress updates.
+    reply_msg — message object used to send the follow-up AI provider prompt.
+    status_msg — message object to edit with progress lines.
+    """
+    loop = asyncio.get_event_loop()
+    lines = [f"Building your Heritage Archive workspace on <b>{_esc(page_title)}</b>...\n"]
+
+    async def update_status(new_line: str):
+        lines.append(new_line)
+        try:
+            await status_msg.edit_text("\n".join(lines), parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+
+    errors = []
+
+    def on_progress(msg: str):
+        asyncio.run_coroutine_threadsafe(update_status(msg), loop).result(timeout=10)
+
+    def do_create():
+        try:
+            return workspace_setup.create_user_workspace(token, page_id, on_progress)
+        except Exception as e:
+            errors.append(e)
+            return None
+
+    result = await loop.run_in_executor(None, do_create)
+
+    if errors or result is None:
+        await status_msg.edit_text(
+            f"⚠️ Workspace setup failed: {errors[0] if errors else 'unknown error'}\n\n"
+            "Check that your token is valid and the page is shared with the integration, "
+            "then try /register_reset to start over."
+        )
+        return
+
+    partial["notion_token"] = token
+    partial["collection_db_id"] = result["collection_db_id"]
+    partial["ootd_db_id"] = result["ootd_db_id"]
+    user_store.reg_set(user_id, "ai_provider", partial)
+
+    buttons = [
+        [InlineKeyboardButton("Anthropic (Claude) — recommended", callback_data="reg_provider:anthropic")],
+        [InlineKeyboardButton("OpenAI (GPT-4o)", callback_data="reg_provider:openai")],
+        [InlineKeyboardButton("OpenRouter (multi-model)", callback_data="reg_provider:openrouter")],
+        [InlineKeyboardButton("Skip — use the bot's key", callback_data="reg_provider:bot")],
+    ]
+    await reply_msg.reply_text(
+        "✅ <b>Workspace ready.</b> 6 databases created in your Notion.\n\n"
+        "Which AI provider do you want for outfit identification?\n\n"
+        "<i>Skip to use the bot's shared key (may have usage limits during beta).</i>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(buttons),
     )
 
 
@@ -167,60 +236,63 @@ async def handle_registration_text(update: Update, context: ContextTypes.DEFAULT
     text = update.message.text.strip()
 
     if step == "notion_token":
-        if not text.startswith("secret_"):
-            await update.message.reply_text("That doesn't look like a Notion token (should start with <code>secret_</code>). Try again:", parse_mode=ParseMode.HTML)
+        if not (text.startswith("ntn_") or text.startswith("secret_")):
+            await update.message.reply_text(
+                "That doesn't look like a Notion integration token.\n"
+                "It should start with <code>ntn_</code> (or <code>secret_</code> for older tokens).\n\n"
+                "Make sure you're copying the <b>Internal Integration Token</b>, not a page URL.",
+                parse_mode=ParseMode.HTML,
+            )
             return
-        partial["notion_token"] = text
-        user_store.reg_set(user_id, "collection_db_id", partial)
-        await update.message.reply_text(
-            "<b>Step 2 of 5:</b> Send me your <b>Wardrobe Items</b> database ID.\n\n"
-            "Find it by opening the database in Notion → copy the URL → "
-            "the 32-character ID is after the last <code>/</code> and before <code>?</code>.",
-            parse_mode=ParseMode.HTML,
+
+        # Find pages accessible to this integration
+        status = await update.message.reply_text("Connecting to Notion...")
+        pages = await asyncio.get_event_loop().run_in_executor(
+            None, workspace_setup.find_accessible_pages, text
         )
 
-    elif step == "collection_db_id":
-        db_id = text.replace("-", "")
-        if len(db_id) != 32:
-            await update.message.reply_text("That doesn't look like a Notion database ID (32 characters). Paste it directly from the URL:")
+        if not pages:
+            await status.edit_text(
+                "I connected to Notion, but couldn't find any pages shared with this integration.\n\n"
+                "Go to your blank Heritage Archive page in Notion → click <b>···</b> → "
+                "<b>Connections</b> → add your integration. Then try again.",
+                parse_mode=ParseMode.HTML,
+            )
             return
-        partial["collection_db_id"] = _format_db_id(db_id)
-        user_store.reg_set(user_id, "ootd_db_id", partial)
-        await update.message.reply_text(
-            "<b>Step 3 of 5:</b> Send me your <b>OOTD / Lookbook</b> database ID:",
-            parse_mode=ParseMode.HTML,
-        )
 
-    elif step == "ootd_db_id":
-        db_id = text.replace("-", "")
-        if len(db_id) != 32:
-            await update.message.reply_text("That doesn't look like a Notion database ID. Try again:")
-            return
-        partial["ootd_db_id"] = _format_db_id(db_id)
-        user_store.reg_set(user_id, "ai_provider", partial)
-        buttons = [
-            [InlineKeyboardButton("Anthropic (Claude)", callback_data="reg_provider:anthropic")],
-            [InlineKeyboardButton("OpenAI (GPT-4)", callback_data="reg_provider:openai")],
-            [InlineKeyboardButton("OpenRouter (multi-model)", callback_data="reg_provider:openrouter")],
-        ]
-        await update.message.reply_text(
-            "<b>Step 4 of 5:</b> Which AI provider do you use?",
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(buttons),
-        )
+        if len(pages) == 1:
+            page = pages[0]
+            await status.edit_text(
+                f"Found page: <b>{_esc(page['title'])}</b>\n\nSetting up your workspace...",
+                parse_mode=ParseMode.HTML,
+            )
+            await _run_workspace_setup(user_id, update.message, status, text, page["id"], page["title"], partial)
+
+        else:
+            # Multiple pages — let user choose
+            partial["notion_token"] = text
+            partial["_page_candidates"] = pages
+            user_store.reg_set(user_id, "notion_page", partial)
+            buttons = [
+                [InlineKeyboardButton(p["title"][:60], callback_data=f"reg_page:{p['id']}")]
+                for p in pages[:8]
+            ]
+            await status.edit_text(
+                "I found multiple pages. Which one should I build your wardrobe inside?",
+                reply_markup=InlineKeyboardMarkup(buttons),
+            )
 
     elif step == "ai_key":
         partial["ai_key"] = text
         user_store.reg_set(user_id, "github", partial)
         buttons = [
-            [InlineKeyboardButton("Yes, set up GitHub hosting", callback_data="reg_github:yes")],
-            [InlineKeyboardButton("Skip — use freeimage.host", callback_data="reg_github:skip")],
+            [InlineKeyboardButton("Yes, use GitHub for photo storage", callback_data="reg_github:yes")],
+            [InlineKeyboardButton("Skip — use free image hosting", callback_data="reg_github:skip")],
         ]
         await update.message.reply_text(
-            "<b>Step 5 of 5:</b> Image hosting.\n\n"
-            "Outfit photos can be stored permanently on GitHub (recommended) or "
-            "anonymously on freeimage.host.\n\n"
-            "Want to set up GitHub hosting?",
+            "<b>Almost done.</b> Where should outfit photos be stored?\n\n"
+            "GitHub (recommended) — photos are permanent in your own repo.\n"
+            "Free hosting — anonymous, no account needed, but links may expire.",
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(buttons),
         )
@@ -229,15 +301,14 @@ async def handle_registration_text(update: Update, context: ContextTypes.DEFAULT
         partial["github_token"] = text
         user_store.reg_set(user_id, "github_repo", partial)
         await update.message.reply_text(
-            "GitHub token saved. Now send your repository name:\n"
-            "Format: <code>username/repo-name</code>\n"
-            "Example: <code>jane/my-wardrobe-photos</code>",
+            "Token saved. Send your repository name:\n"
+            "<code>username/repo-name</code>",
             parse_mode=ParseMode.HTML,
         )
 
     elif step == "github_repo":
         if "/" not in text:
-            await update.message.reply_text("Format should be <code>username/repo-name</code>:", parse_mode=ParseMode.HTML)
+            await update.message.reply_text("Format: <code>username/repo-name</code>", parse_mode=ParseMode.HTML)
             return
         partial["github_repo"] = text
         await _finish_registration(update, user_id, partial)
@@ -252,25 +323,22 @@ def _format_db_id(raw: str) -> str:
 async def _finish_registration(update_or_query, user_id: int, partial: dict):
     partial.setdefault("always_worn", [])
     partial.setdefault("registered_at", date.today().isoformat())
+    partial.pop("_page_candidates", None)
     user_store.save(user_id, partial)
     user_store.reg_clear(user_id)
 
-    # Test the connection
-    try:
-        test_items = notion.fetch_all_items(partial)
-        count = len(test_items)
-        msg = (
-            f"✅ <b>You're all set!</b>\n\n"
-            f"Connected to your Notion workspace.\n"
-            f"Found <b>{count} items</b> in your wardrobe.\n\n"
-            f"Send me an outfit photo to log your first OOTD.\n"
-            f"Use /help to see all commands."
-        )
-    except Exception as e:
-        msg = (
-            f"⚠️ Credentials saved, but I couldn't connect to Notion: {e}\n\n"
-            f"Check your token and database IDs with /register_reset to try again."
-        )
+    msg = (
+        "✅ <b>You're all set!</b>\n\n"
+        "Send me an outfit photo to log your first OOTD.\n\n"
+        "Your Notion workspace has:\n"
+        "• <b>My Wardrobe</b> — add your items here\n"
+        "• <b>My Lookbook</b> — outfit log, filled by the bot\n"
+        "• Designers, Materials, Colours, Season lookup tables\n\n"
+        "One thing to add manually in Notion (the API can't do it):\n"
+        "In <b>My Wardrobe</b> → add a <b>Rollup</b> property called <b>Fits</b> "
+        "counting entries from the Items back-relation. See the ⚙️ Setup Notes page in your workspace.\n\n"
+        "/help — all commands"
+    )
 
     if hasattr(update_or_query, 'message'):
         await update_or_query.message.reply_text(msg, parse_mode=ParseMode.HTML)
@@ -282,33 +350,59 @@ async def _finish_registration(update_or_query, user_id: int, partial: dict):
 
 async def cmd_admin_add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    /admin_add <telegram_user_id> <notion_token> <collection_db_id> <ootd_db_id> [ai_provider] [ai_key]
-    Bot owner only. Registers a user without them having to go through the wizard.
+    /admin_add <user_id> <notion_token> <page_id_or_url> [ai_provider] [ai_key]
+    Bot owner only. Creates the workspace for a user and registers them.
+    page_id_or_url: the Notion page the integration has access to.
     """
-    user_id = update.effective_user.id
-    if user_id != config.BOT_OWNER_ID:
+    caller_id = update.effective_user.id
+    if caller_id != config.BOT_OWNER_ID:
         await update.message.reply_text("This command is for the bot owner only.")
         return
 
     args = context.args
-    if len(args) < 4:
+    if len(args) < 3:
         await update.message.reply_text(
-            "Usage: /admin_add <user_id> <notion_token> <collection_db_id> <ootd_db_id> [ai_provider] [ai_key]"
+            "Usage: /admin_add <user_id> <notion_token> <notion_page_id> [ai_provider] [ai_key]\n\n"
+            "notion_page_id: the 32-char ID of the page shared with the integration."
         )
         return
 
     target_id = int(args[0])
+    token = args[1]
+    raw_page = args[2].replace("-", "")
+    page_id = _format_db_id(raw_page)
+
+    status = await update.message.reply_text(f"Setting up workspace for user {target_id}...")
+
+    errors = []
+    result = None
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: workspace_setup.create_user_workspace(token, page_id)
+        )
+    except Exception as e:
+        errors.append(e)
+
+    if errors or result is None:
+        await status.edit_text(f"Setup failed: {errors[0] if errors else 'unknown error'}")
+        return
+
     cfg = {
-        "notion_token": args[1],
-        "collection_db_id": _format_db_id(args[2].replace("-", "")),
-        "ootd_db_id": _format_db_id(args[3].replace("-", "")),
-        "ai_provider": args[4] if len(args) > 4 else "anthropic",
-        "ai_key": args[5] if len(args) > 5 else "",
+        "notion_token": token,
+        "collection_db_id": result["collection_db_id"],
+        "ootd_db_id": result["ootd_db_id"],
+        "ai_provider": args[3] if len(args) > 3 else "anthropic",
+        "ai_key": args[4] if len(args) > 4 else "",
         "always_worn": [],
         "registered_at": date.today().isoformat(),
     }
     user_store.save(target_id, cfg)
-    await update.message.reply_text(f"User {target_id} registered. They can now use /start.")
+    await status.edit_text(
+        f"✅ User {target_id} registered. Workspace created.\n"
+        f"Wardrobe DB: <code>{result['collection_db_id']}</code>",
+        parse_mode=ParseMode.HTML,
+    )
 
 
 # ── Core commands ─────────────────────────────────────────────────────────────
@@ -788,6 +882,20 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     # Registration callbacks
+    if data.startswith("reg_page:"):
+        page_id = data.split(":", 1)[1]
+        reg = user_store.reg_get(user_id)
+        if not reg:
+            await _safe_edit(query, "Registration session expired. Run /register again.")
+            return
+        partial = reg["partial"]
+        token = partial["notion_token"]
+        candidates = partial.get("_page_candidates", [])
+        page_title = next((p["title"] for p in candidates if p["id"] == page_id), "your page")
+        await _safe_edit(query, f"Setting up workspace on <b>{_esc(page_title)}</b>...", parse_mode=ParseMode.HTML)
+        await _run_workspace_setup(user_id, query.message, query.message, token, page_id, page_title, partial)
+        return
+
     if data.startswith("reg_provider:"):
         provider = data.split(":", 1)[1]
         reg = user_store.reg_get(user_id)
@@ -795,9 +903,24 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await _safe_edit(query, "Registration session expired. Run /register again.")
             return
         reg["partial"]["ai_provider"] = provider
-        user_store.reg_set(user_id, "ai_key", reg["partial"])
-        provider_names = {"anthropic": "Anthropic", "openai": "OpenAI", "openrouter": "OpenRouter"}
-        await _safe_edit(query, f"{provider_names[provider]} selected.\n\nSend me your API key:")
+        if provider == "bot":
+            reg["partial"]["ai_key"] = ""
+            user_store.reg_set(user_id, "github", reg["partial"])
+            buttons = [
+                [InlineKeyboardButton("Yes, use GitHub for photo storage", callback_data="reg_github:yes")],
+                [InlineKeyboardButton("Skip — use free image hosting", callback_data="reg_github:skip")],
+            ]
+            await _safe_edit(query,
+                "Using the bot's shared AI key.\n\n"
+                "Where should outfit photos be stored?\n\n"
+                "GitHub — permanent, in your own repo.\n"
+                "Free hosting — no account needed.",
+                reply_markup=InlineKeyboardMarkup(buttons),
+            )
+        else:
+            user_store.reg_set(user_id, "ai_key", reg["partial"])
+            provider_names = {"anthropic": "Anthropic", "openai": "OpenAI", "openrouter": "OpenRouter"}
+            await _safe_edit(query, f"{provider_names[provider]} selected.\n\nSend me your API key:")
         return
 
     if data.startswith("reg_github:"):
