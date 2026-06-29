@@ -67,7 +67,6 @@ def fetch_all_items(cfg: dict) -> list[dict]:
                     _get_text(colour_prop.get("rich_text", []))
                     or _get_text(p.get("Primary Colour", {}).get("rich_text", []))
                 )
-            colour_detail = _get_text(p.get("Colour Detail", {}).get("rich_text", []))
             designer_ids = [r_["id"] for r_ in p.get("Designer", {}).get("relation", [])]
 
             price_prop = p.get("Purchase Price", {}) or p.get("Price (SGD)", {}) or {}
@@ -85,7 +84,6 @@ def fetch_all_items(cfg: dict) -> list[dict]:
                 "sku_cat": sku_cat,
                 "colour": colour,
                 "colour_ids": colour_ids,
-                "colour_detail": colour_detail,
                 "designer_ids": designer_ids,
                 "designer": "",          # resolved separately
                 "price": price,

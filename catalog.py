@@ -134,7 +134,7 @@ def search(query_type: str, query_colour: str, items: list[dict], max_results: i
     for item in items:
         score = 0
         name_l = item["name"].lower()
-        colour_l = (item.get("colour", "") + " " + item.get("colour_detail", "")).lower()
+        colour_l = item.get("colour", "").lower()
 
         if item.get("sku_cat") in matching_cats:
             score += 3
