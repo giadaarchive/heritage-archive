@@ -218,9 +218,9 @@ def create_ootd_entry(cfg: dict, date_str: str, item_ids: list[str],
     existing = count_ootd_for_date(cfg, date_str)
     title = f"OOTD {date_str}" if existing == 0 else f"OOTD {date_str} ({existing + 1})"
 
-    # Support both "Name" and "Outfit" as title property names
     title_key = cfg.get("ootd_title_property", "Name")
     items_key = cfg.get("ootd_items_property", "Items")
+    season_key = cfg.get("ootd_season_property", "Season")
 
     properties: dict = {
         title_key: {"title": [{"text": {"content": title}}]},
@@ -228,7 +228,7 @@ def create_ootd_entry(cfg: dict, date_str: str, item_ids: list[str],
         items_key: {"relation": [{"id": pid} for pid in item_ids]},
     }
     if season in ("SS", "AW", "Year-round", "Resort"):
-        properties["Season"] = {"select": {"name": season}}
+        properties[season_key] = {"select": {"name": season}}
 
     body: dict = {"parent": {"database_id": db_id}, "properties": properties}
 
