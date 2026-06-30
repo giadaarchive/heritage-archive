@@ -101,6 +101,15 @@ async def _safe_edit(query, text: str, **kwargs) -> bool:
         raise
 
 
+async def _safe_msg_edit(msg, text: str, **kwargs):
+    try:
+        await msg.edit_text(text, **kwargs)
+    except BadRequest as e:
+        if "not modified" in str(e).lower():
+            return
+        raise
+
+
 def _require_registration(user_id: int) -> str | None:
     """Returns error message if user is not registered, else None."""
     if not user_store.is_registered(user_id):
@@ -804,7 +813,7 @@ async def _run_ai_and_review(update, context, all_images, img_hash, outfit_date,
     eff_msg = update.effective_message
 
     msg = status_msg or await eff_msg.reply_text("🔍 Identifying items...")
-    await msg.edit_text(f"📅 <b>{outfit_date}</b>\n\n🔍 Identifying items...", parse_mode=ParseMode.HTML)
+    await _safe_msg_edit(msg, f"📅 <b>{outfit_date}</b>\n\n🔍 Identifying items...", parse_mode=ParseMode.HTML)
 
     try:
         catalog = catalog_mod.load(cfg, user_id)
