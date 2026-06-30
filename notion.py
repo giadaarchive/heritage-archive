@@ -19,6 +19,15 @@ def _get_text(rich_text_list) -> str:
     return "".join(t.get("plain_text", "") for t in rich_text_list) if rich_text_list else ""
 
 
+def _image_block(url_or_notion_id: str) -> dict:
+    if url_or_notion_id.startswith("notion:"):
+        fid = url_or_notion_id[7:]
+        return {"object": "block", "type": "image",
+                "image": {"type": "file_upload", "file_upload": {"id": fid}}}
+    return {"object": "block", "type": "image",
+            "image": {"type": "external", "external": {"url": url_or_notion_id}}}
+
+
 # ── Collection items ──────────────────────────────────────────────────────────
 
 def fetch_all_items(cfg: dict) -> list[dict]:
@@ -178,11 +187,7 @@ def create_item(cfg: dict, title: str, category_hint: str = "", colour: str = ""
     body: dict = {"parent": {"database_id": db_id}, "properties": properties}
 
     if image_url:
-        body["children"] = [{
-            "object": "block",
-            "type": "image",
-            "image": {"type": "external", "external": {"url": image_url}},
-        }]
+        body["children"] = [_image_block(image_url)]
 
     r = requests.post("https://api.notion.com/v1/pages", headers=headers, json=body, timeout=30)
     r.raise_for_status()
@@ -228,10 +233,7 @@ def create_ootd_entry(cfg: dict, date_str: str, item_ids: list[str],
     body: dict = {"parent": {"database_id": db_id}, "properties": properties}
 
     if image_urls:
-        body["children"] = [
-            {"object": "block", "type": "image", "image": {"type": "external", "external": {"url": url}}}
-            for url in image_urls
-        ]
+        body["children"] = [_image_block(u) for u in image_urls]
 
     r = requests.post("https://api.notion.com/v1/pages", headers=headers, json=body, timeout=30)
     r.raise_for_status()
@@ -275,12 +277,48 @@ def fetch_ootd_entries(cfg: dict, limit: int = 500) -> list[dict]:
 # ── Image hosting ─────────────────────────────────────────────────────────────
 
 def host_image(cfg: dict, image_bytes: bytes, date_str: str = "", suffix: str = "") -> str | None:
-    """Upload image: tries GitHub (user's repo), then freeimage.host."""
+    """Upload image: tries Notion Files API first, then GitHub, then freeimage.host."""
+    if cfg.get("notion_token"):
+        fid = _upload_notion_file(cfg["notion_token"], image_bytes, f"outfit{suffix}.jpg")
+        if fid:
+            return f"notion:{fid}"
     if cfg.get("github_token") and cfg.get("github_repo") and date_str:
         url = _upload_github(cfg, image_bytes, date_str, suffix)
         if url:
             return url
     return _upload_freeimage(image_bytes)
+
+
+def _upload_notion_file(token: str, image_bytes: bytes, filename: str = "outfit.jpg") -> str | None:
+    """Upload image via Notion Files API. Returns file_upload_id or None."""
+    headers = {"Authorization": f"Bearer {token}", "Notion-Version": "2022-06-28"}
+    try:
+        # Step 1: create upload session
+        r = requests.post(
+            "https://api.notion.com/v1/file_uploads",
+            headers={**headers, "Content-Type": "application/json"},
+            json={"name": filename},
+            timeout=20,
+        )
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        upload_url = data.get("upload_url")
+        file_id = data.get("id")
+        if not upload_url or not file_id:
+            return None
+        # Step 2: upload the bytes
+        r2 = requests.post(
+            upload_url,
+            headers=headers,
+            files={"file": (filename, image_bytes, "image/jpeg")},
+            timeout=60,
+        )
+        if r2.status_code not in (200, 201):
+            return None
+        return file_id
+    except Exception:
+        return None
 
 
 def _upload_github(cfg: dict, image_bytes: bytes, date_str: str, suffix: str) -> str | None:
