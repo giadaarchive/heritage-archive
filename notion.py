@@ -227,8 +227,7 @@ def create_ootd_entry(cfg: dict, date_str: str, item_ids: list[str],
         "Worn": {"date": {"start": date_str}},
         items_key: {"relation": [{"id": pid} for pid in item_ids]},
     }
-    if season in ("SS", "AW", "Year-round", "Resort"):
-        properties[season_key] = {"select": {"name": season}}
+    # Style select removed — season is set via Style Tags relation only
 
     body: dict = {"parent": {"database_id": db_id}, "properties": properties}
 
@@ -256,13 +255,46 @@ def create_ootd_entry(cfg: dict, date_str: str, item_ids: list[str],
     return page_id
 
 
+_style_tag_cache: dict[str, str] = {}  # "SS" → page_id, "AW" → page_id
+
 def _resolve_style_tag_ids(cfg: dict, season: str | None) -> list[str]:
-    """Return tag page IDs for the season, from user config."""
-    if not season:
+    """
+    Find the 'Fashion — SS' or 'Fashion — AW' page in the tags database.
+    Uses config keys style_tag_ss / style_tag_aw if set, otherwise searches.
+    """
+    if not season or season not in ("SS", "AW"):
         return []
-    key = f"style_tag_ss" if season == "SS" else f"style_tag_aw"
-    tag_id = cfg.get(key, "")
-    return [tag_id] if tag_id else []
+
+    config_key = "style_tag_ss" if season == "SS" else "style_tag_aw"
+    if cfg.get(config_key):
+        return [cfg[config_key]]
+
+    # Check in-memory cache
+    if season in _style_tag_cache:
+        return [_style_tag_cache[season]]
+
+    # Search for the tag page
+    search_term = f"Fashion — {season}"
+    try:
+        r = requests.post(
+            "https://api.notion.com/v1/search",
+            headers=_headers(cfg),
+            json={"query": search_term, "filter": {"value": "page", "property": "object"}, "page_size": 10},
+            timeout=15,
+        )
+        for result in r.json().get("results", []):
+            props = result.get("properties", {})
+            title = ""
+            for v in props.values():
+                if v.get("type") == "title":
+                    title = "".join(t.get("plain_text", "") for t in v.get("title", []))
+            if title.strip() == search_term:
+                pid = result["id"]
+                _style_tag_cache[season] = pid
+                return [pid]
+    except Exception:
+        pass
+    return []
 
 
 def write_ootd_story(cfg: dict, page_id: str, story: str):
