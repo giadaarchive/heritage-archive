@@ -1421,11 +1421,63 @@ async def _do_confirm(query, session: dict, user_id: int):
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=True,
         )
+        # Generate OOTD story in background
+        asyncio.create_task(
+            _generate_ootd_story(query._bot, query.message.chat_id, page_id, session.get("all_images", []), cfg)
+        )
     except Exception as e:
         await query.message.reply_text(f"⚠️ Failed to create Notion entry: {e}")
         print(traceback.format_exc(), file=sys.stderr)
     finally:
         _sessions.pop(user_id, None)
+
+
+async def _generate_ootd_story(bot, chat_id: int, page_id: str, all_images: list[bytes], cfg: dict):
+    """Generate OOTD story via Claude and write to Notion OOTD Story property."""
+    try:
+        loop = asyncio.get_event_loop()
+        story = await loop.run_in_executor(None, _story_from_images, all_images, cfg)
+        if not story:
+            return
+        await loop.run_in_executor(None, notion.write_ootd_story, cfg, page_id, story)
+        await bot.send_message(chat_id, "✍️ OOTD story written to Notion.")
+    except Exception as e:
+        print(f"[story] failed: {e}", file=sys.stderr)
+
+
+def _story_from_images(all_images: list[bytes], cfg: dict) -> str | None:
+    import random, ai_client as _ai
+    PROMPT = (
+        "You are writing fashion narratives for a personal lookbook. Write an evocative, atmospheric fashion story for this outfit.\n\n"
+        "Write 3–4 paragraphs that capture the vibe, energy and character of this look. Do not describe the clothes literally — "
+        "write about the feeling, the world this outfit belongs to, the character wearing it, the cultural moment it references.\n\n"
+        "The tone is chic, elegant, scene-setting. Think Vogue editorial caption meets personal essay. British English. "
+        "Written by someone who knows both fashion and literature.\n\n"
+        "The philosophy: every day is an occasion. This outfit is how someone chose to show up today. Make that visible.\n\n"
+        "Style rules:\n"
+        "- Never use contradiction sentence structures (not 'She is not X, she is Y'). Build meaning through what something IS.\n"
+        "- Use no em dashes. If you feel the urge, restructure the sentence.\n"
+        "- Do not start with 'I'. Begin in scene."
+    )
+    if random.random() < 0.085:
+        PROMPT += "\n\nOpening instruction: Begin the piece with the exact words \"Somewhere between\" and build the scene from there."
+
+    # Use the first image only for story generation
+    if not all_images:
+        return None
+    import base64
+    from io import BytesIO
+    from PIL import Image as _Image
+    img = _Image.open(BytesIO(all_images[0])).convert("RGB")
+    if max(img.width, img.height) > 1200:
+        img.thumbnail((1200, 1200), _Image.LANCZOS)
+    buf = BytesIO()
+    img.save(buf, format="JPEG", quality=85)
+    image_b64 = base64.standard_b64encode(buf.getvalue()).decode()
+
+    return _ai.vision_call(cfg, system=PROMPT,
+        user_text="Write the OOTD story for this outfit.",
+        image_b64=image_b64, max_tokens=1024)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────

@@ -237,7 +237,48 @@ def create_ootd_entry(cfg: dict, date_str: str, item_ids: list[str],
 
     r = requests.post("https://api.notion.com/v1/pages", headers=headers, json=body, timeout=30)
     r.raise_for_status()
-    return r.json()["id"]
+    page_id = r.json()["id"]
+
+    # Set Style Tags relation if tag IDs are configured
+    style_tag_ids = _resolve_style_tag_ids(cfg, season)
+    if style_tag_ids:
+        try:
+            style_tags_key = cfg.get("ootd_style_tags_property", "Style Tags")
+            requests.patch(
+                f"https://api.notion.com/v1/pages/{page_id}",
+                headers=headers,
+                json={"properties": {style_tags_key: {"relation": [{"id": tid} for tid in style_tag_ids]}}},
+                timeout=20,
+            )
+        except Exception:
+            pass
+
+    return page_id
+
+
+def _resolve_style_tag_ids(cfg: dict, season: str | None) -> list[str]:
+    """Return tag page IDs for the season, from user config."""
+    if not season:
+        return []
+    key = f"style_tag_ss" if season == "SS" else f"style_tag_aw"
+    tag_id = cfg.get(key, "")
+    return [tag_id] if tag_id else []
+
+
+def write_ootd_story(cfg: dict, page_id: str, story: str):
+    """Write generated story text to the OOTD Story property."""
+    headers = _headers(cfg)
+    story_key = cfg.get("ootd_story_property", "OOTD Story")
+    # Notion rich_text blocks max 2000 chars each
+    chunks = [story[i:i+2000] for i in range(0, len(story), 2000)]
+    rich_text = [{"type": "text", "text": {"content": chunk}} for chunk in chunks]
+    r = requests.patch(
+        f"https://api.notion.com/v1/pages/{page_id}",
+        headers=headers,
+        json={"properties": {story_key: {"rich_text": rich_text}}},
+        timeout=20,
+    )
+    r.raise_for_status()
 
 
 def fetch_ootd_entries(cfg: dict, limit: int = 500) -> list[dict]:
