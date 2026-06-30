@@ -246,8 +246,22 @@ async def handle_registration_text(update: Update, context: ContextTypes.DEFAULT
             )
             return
 
-        # Find pages accessible to this integration
         status = await update.message.reply_text("Connecting to Notion...")
+
+        # Check for existing My Wardrobe + My Lookbook databases first
+        existing = await asyncio.get_event_loop().run_in_executor(
+            None, workspace_setup.find_existing_workspace, text
+        )
+        if existing:
+            partial.update({"notion_token": text, **existing})
+            await status.edit_text(
+                "Found your existing workspace — <b>My Wardrobe</b> and <b>My Lookbook</b> connected.",
+                parse_mode=ParseMode.HTML,
+            )
+            await _ask_kimi_key(update, user_id, partial)
+            return
+
+        # No existing workspace — find pages to build inside
         pages = await asyncio.get_event_loop().run_in_executor(
             None, workspace_setup.find_accessible_pages, text
         )

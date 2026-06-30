@@ -59,6 +59,34 @@ def _sel(name: str) -> dict:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+def find_existing_workspace(token: str) -> dict | None:
+    """
+    Looks for existing My Wardrobe + My Lookbook databases.
+    Returns {collection_db_id, ootd_db_id} if both found, else None.
+    """
+    try:
+        r = requests.post(
+            "https://api.notion.com/v1/search",
+            headers=_h(token),
+            json={"filter": {"value": "database", "property": "object"}, "page_size": 50},
+            timeout=20,
+        )
+        r.raise_for_status()
+        wardrobe_id = None
+        lookbook_id = None
+        for db in r.json().get("results", []):
+            title = "".join(t.get("plain_text", "") for t in db.get("title", []))
+            if title == "My Wardrobe":
+                wardrobe_id = db["id"]
+            elif title == "My Lookbook":
+                lookbook_id = db["id"]
+        if wardrobe_id and lookbook_id:
+            return {"collection_db_id": wardrobe_id, "ootd_db_id": lookbook_id}
+        return None
+    except Exception:
+        return None
+
+
 def find_accessible_pages(token: str) -> list[dict]:
     """
     Returns top-level pages and databases the integration can access, as list of {id, title}.
