@@ -77,6 +77,24 @@ def refresh(cfg: dict, user_id: int) -> list[dict]:
     known_colours = notion.resolve_lookup_names(cfg, items, "colour_ids", "colour", known_colours)
     colour_file.write_text(json.dumps(known_colours, ensure_ascii=False))
 
+    # Build wear-frequency map from OOTD history
+    try:
+        ootd_entries = notion.fetch_ootd_entries(cfg, limit=200)
+        wear_counts: dict[str, int] = {}
+        for entry in ootd_entries:
+            for iid in entry.get("item_ids", []):
+                # Notion IDs may come with or without dashes — normalise
+                iid_norm = iid.replace("-", "")
+                wear_counts[iid_norm] = wear_counts.get(iid_norm, 0) + 1
+        for item in items:
+            iid_norm = item["id"].replace("-", "")
+            item["recent_wears"] = wear_counts.get(iid_norm, 0)
+        print(f"[cache] user {user_id}: wear counts from {len(ootd_entries)} OOTDs", flush=True)
+    except Exception as e:
+        print(f"[cache] ootd history fetch failed: {e}", flush=True)
+        for item in items:
+            item["recent_wears"] = 0
+
     cache = {"fetched_at": time.time(), "items": items}
     _cache_file(user_id).write_text(json.dumps(cache, ensure_ascii=False))
     _refresh_in_progress.discard(str(user_id))
@@ -119,7 +137,11 @@ def load(cfg: dict, user_id: int, force: bool = False) -> list[dict]:
 
 
 def search(query_type: str, query_colour: str, items: list[dict], max_results: int = 40) -> list[dict]:
-    """Filter catalog by clothing type and colour. Returns scored, ranked results."""
+    """
+    Score catalog items by type/colour match and wear history.
+    Falls back to the full catalog sorted by wear frequency when keyword
+    scoring is thin — ensures items without SKUs always reach the AI.
+    """
     qt = query_type.lower()
     qc = query_colour.lower()
 
@@ -136,19 +158,37 @@ def search(query_type: str, query_colour: str, items: list[dict], max_results: i
         name_l = item["name"].lower()
         colour_l = item.get("colour", "").lower()
 
+        # SKU category match
         if item.get("sku_cat") in matching_cats:
             score += 3
+
+        # Type keywords in item name
         for word in qt.split():
             if len(word) > 3 and word in name_l:
                 score += 2
+
+        # Colour keywords
         for word in qc.split():
             if len(word) > 3 and word in colour_l:
                 score += 2
-            if word in name_l:
+            if len(word) > 3 and word in name_l:
                 score += 1
 
-        if score > 0:
-            scored.append((score, item))
+        # Wear-history bonus (capped at 4 points)
+        score += min(item.get("recent_wears", 0), 4)
 
+        scored.append((score, item))
+
+    # Sort by score descending
     scored.sort(key=lambda x: -x[0])
-    return [item for _, item in scored[:max_results]]
+
+    # Always send at least half max_results to the AI even when keyword score = 0
+    # so items without SKUs are never silently dropped.
+    strong = [(s, it) for s, it in scored if s > 0]
+    if len(strong) < max_results // 2:
+        # Pad with most-worn items not already in strong
+        strong_ids = {it["id"] for _, it in strong}
+        pad = [(s, it) for s, it in scored if it["id"] not in strong_ids]
+        strong = strong + pad
+
+    return [item for _, item in strong[:max_results]]

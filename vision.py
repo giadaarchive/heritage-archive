@@ -33,17 +33,19 @@ Example:
 """
 
 MATCH_SYSTEM = """\
-You are a luxury wardrobe curator. You will receive a description of one clothing item and a list of candidates from the user's personal collection.
+You are a luxury wardrobe curator. Match a described garment to the closest item(s) in the user's personal collection.
 
-Select the best match and return your reasoning. If no candidate is a reasonable match, say so.
+Rules:
+- Prioritise items the user has worn before (higher "worn" count = more likely to be correct)
+- Match on garment type, material, colour, and brand — in that order of importance
+- A partial name match (e.g. "Kiton" + "knit pullover") is strong evidence
+- If best confidence < 0.40, return {"matches": []}
 
 Return ONLY a raw JSON object — no markdown, no code fences.
 {"matches": [
-  {"candidate_index": 0, "confidence": 0.92, "reasoning": "Navy double-breasted cut matches exactly"},
-  {"candidate_index": 2, "confidence": 0.55, "reasoning": "Also navy blazer but different silhouette"}
+  {"candidate_index": 0, "confidence": 0.92, "reasoning": "Kiton knit pullover, colour and material match"},
+  {"candidate_index": 2, "confidence": 0.45, "reasoning": "Also a knit but different brand"}
 ]}
-
-Confidence: 0.0–1.0. If best match confidence < 0.4, return {"matches": []}.
 """
 
 
@@ -58,8 +60,10 @@ def _format_candidates(candidates: list[dict]) -> str:
     lines = []
     for i, c in enumerate(candidates):
         designer = c.get("designer", "")
-        colour = " ".join(filter(None, [c.get("colour"), c.get("colour_detail")]))
-        lines.append(f"{i}. {c['name']} | {designer} | {colour} | SKU: {c['sku']}")
+        colour = c.get("colour", "")
+        wears = c.get("recent_wears", 0)
+        worn_tag = f" | worn {wears}x" if wears else ""
+        lines.append(f"{i}. {c['name']} | {designer} | {colour}{worn_tag}")
     return "\n".join(lines)
 
 
