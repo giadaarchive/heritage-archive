@@ -79,7 +79,7 @@ def refresh(cfg: dict, user_id: int) -> list[dict]:
 
     # Build wear-frequency map from OOTD history
     try:
-        ootd_entries = notion.fetch_ootd_entries(cfg, limit=200)
+        ootd_entries = notion.fetch_ootd_entries(cfg, limit=700)
         wear_counts: dict[str, int] = {}
         for entry in ootd_entries:
             for iid in entry.get("item_ids", []):
@@ -136,20 +136,45 @@ def load(cfg: dict, user_id: int, force: bool = False) -> list[dict]:
     return refresh(cfg, user_id)
 
 
-def search(query_type: str, query_colour: str, items: list[dict], max_results: int = 40) -> list[dict]:
+# Synonym expansions for type matching — maps vision words → catalog SKU label words
+_TYPE_SYNONYMS = {
+    "crew neck": ["knit", "sweater", "pullover"],
+    "crewneck": ["knit", "sweater", "pullover"],
+    "t-shirt": ["top", "tee"],
+    "tee": ["top", "t-shirt"],
+    "slacks": ["trousers", "pants"],
+    "blazer": ["jacket"],
+    "coat": ["jacket", "outerwear"],
+    "loafers": ["shoes"],
+    "heels": ["shoes"],
+    "mules": ["shoes"],
+    "sandals": ["shoes"],
+    "tote": ["bag"],
+    "clutch": ["bag"],
+    "crossbody": ["bag"],
+}
+
+
+def search(query_type: str, query_colour: str, items: list[dict], max_results: int = 50) -> list[dict]:
     """
     Score catalog items by type/colour match and wear history.
-    Falls back to the full catalog sorted by wear frequency when keyword
-    scoring is thin — ensures items without SKUs always reach the AI.
+    Always surfaces top-worn items from matching categories so the AI
+    always has strong historical candidates to rank.
     """
     qt = query_type.lower()
     qc = query_colour.lower()
+
+    # Expand query with synonyms
+    expanded_words = set(qt.split())
+    for phrase, syns in _TYPE_SYNONYMS.items():
+        if phrase in qt:
+            expanded_words.update(syns)
 
     matching_cats = set()
     for cat, labels in SKU_CAT_LABELS.items():
         if any(label in qt for label in labels):
             matching_cats.add(cat)
-        if any(word in label for word in qt.split() for label in labels):
+        if any(word in label for word in expanded_words for label in labels):
             matching_cats.add(cat)
 
     scored = []
@@ -157,38 +182,46 @@ def search(query_type: str, query_colour: str, items: list[dict], max_results: i
         score = 0
         name_l = item["name"].lower()
         colour_l = item.get("colour", "").lower()
+        wears = item.get("recent_wears", 0)
 
-        # SKU category match
+        # SKU category match — strong signal
         if item.get("sku_cat") in matching_cats:
-            score += 3
+            score += 5
 
-        # Type keywords in item name
-        for word in qt.split():
+        # Type keywords (expanded) in item name
+        for word in expanded_words:
             if len(word) > 3 and word in name_l:
-                score += 2
+                score += 3
 
-        # Colour keywords
+        # Colour match
         for word in qc.split():
             if len(word) > 3 and word in colour_l:
                 score += 2
             if len(word) > 3 and word in name_l:
                 score += 1
 
-        # Wear-history bonus (capped at 4 points)
-        score += min(item.get("recent_wears", 0), 4)
+        # Wear-history: heavily weighted — worn items are almost certainly in the collection
+        score += min(wears, 10)  # up to 10 points (was capped at 4)
 
         scored.append((score, item))
 
-    # Sort by score descending
     scored.sort(key=lambda x: -x[0])
 
-    # Always send at least half max_results to the AI even when keyword score = 0
-    # so items without SKUs are never silently dropped.
-    strong = [(s, it) for s, it in scored if s > 0]
-    if len(strong) < max_results // 2:
-        # Pad with most-worn items not already in strong
-        strong_ids = {it["id"] for _, it in strong}
-        pad = [(s, it) for s, it in scored if it["id"] not in strong_ids]
-        strong = strong + pad
+    # Always guarantee the top 15 most-worn items from matching categories are included
+    # so historically frequent items are never absent from the AI's candidate list.
+    top_worn_in_cat = sorted(
+        [it for it in items if it.get("sku_cat") in matching_cats],
+        key=lambda it: -it.get("recent_wears", 0),
+    )[:15]
 
-    return [item for _, item in strong[:max_results]]
+    result_ids: dict[str, dict] = {}
+    for _, it in scored[:max_results]:
+        result_ids[it["id"]] = it
+    for it in top_worn_in_cat:
+        if it["id"] not in result_ids:
+            result_ids[it["id"]] = it
+
+    # Re-sort final pool by score so AI sees best candidates first
+    id_to_score = {it["id"]: s for s, it in scored}
+    final = sorted(result_ids.values(), key=lambda it: -id_to_score.get(it["id"], 0))
+    return final[:max_results]

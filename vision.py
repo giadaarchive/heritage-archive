@@ -33,18 +33,21 @@ Example:
 """
 
 MATCH_SYSTEM = """\
-You are a luxury wardrobe curator. Match a described garment to the closest item(s) in the user's personal collection.
+You are a luxury wardrobe curator. Match a described garment to the closest items in the user's personal collection.
 
 Rules:
-- Prioritise items the user has worn before (higher "worn" count = more likely to be correct)
-- Match on garment type, material, colour, and brand — in that order of importance
-- A partial name match (e.g. "Kiton" + "knit pullover") is strong evidence
-- If best confidence < 0.40, return {"matches": []}
+- Items with higher "worn" counts are much more likely to be the correct match — always rank them higher
+- Match on garment type first, then colour, then material, then brand
+- Treat these as equivalent: crew neck = round neck = knitwear = pullover = sweater; \
+cotton = lightweight knit; trousers = pants = slacks; jacket = blazer; tote = bag
+- A partial brand or name match is very strong evidence even if description differs
+- ALWAYS return the top 3 candidates — never return an empty list. \
+If uncertain, still rank them and give honest confidence scores (minimum 0.15)
 
 Return ONLY a raw JSON object — no markdown, no code fences.
 {"matches": [
-  {"candidate_index": 0, "confidence": 0.92, "reasoning": "Kiton knit pullover, colour and material match"},
-  {"candidate_index": 2, "confidence": 0.45, "reasoning": "Also a knit but different brand"}
+  {"candidate_index": 0, "confidence": 0.92, "reasoning": "Kiton knit pullover, white, high-wear item"},
+  {"candidate_index": 2, "confidence": 0.35, "reasoning": "Also a white knit but less worn"}
 ]}
 """
 
@@ -61,9 +64,10 @@ def _format_candidates(candidates: list[dict]) -> str:
     for i, c in enumerate(candidates):
         designer = c.get("designer", "")
         colour = c.get("colour", "")
+        sku = c.get("sku", "")
         wears = c.get("recent_wears", 0)
         worn_tag = f" | worn {wears}x" if wears else ""
-        lines.append(f"{i}. {c['name']} | {designer} | {colour}{worn_tag}")
+        lines.append(f"{i}. {c['name']} | {designer} | {colour} | {sku}{worn_tag}")
     return "\n".join(lines)
 
 
@@ -163,7 +167,7 @@ def run_matching(cfg: dict, user_id: int, image_b64: str, items_catalog: list[di
 
     results = []
     for item in identified_items:
-        candidates = catalog_mod.search(item["type"], item["colour"], items_catalog, max_results=35)
+        candidates = catalog_mod.search(item["type"], item["colour"], items_catalog, max_results=50)
 
         # Inject prior corrections for this type+colour
         prior_for_type = corrections.lookup_type_colour(user_id, item["type"], item["colour"])
@@ -184,7 +188,7 @@ def run_matching(cfg: dict, user_id: int, image_b64: str, items_catalog: list[di
                     reasoning=top_matches[0]["reasoning"] + " [confirmed by your history]")
 
         if top_matches:
-            status = "matched" if top_matches[0]["confidence"] >= 0.70 else "ambiguous"
+            status = "matched" if top_matches[0]["confidence"] >= 0.65 else "ambiguous"
         else:
             status = "unidentified"
 

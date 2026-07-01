@@ -77,12 +77,20 @@ def text_call(cfg: dict, system: str, user: str, max_tokens: int, model: str | N
     model = model or DEFAULT_TEXT_MODEL.get(provider, DEFAULT_TEXT_MODEL["anthropic"])
 
     if provider == "kimi":
-        client = _openai_client(key, base_url=KIMI_BASE_URL)
-        resp = client.chat.completions.create(
-            model=model, max_tokens=max_tokens,
-            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-        )
-        return resp.choices[0].message.content.strip()
+        try:
+            client = _openai_client(key, base_url=KIMI_BASE_URL)
+            resp = client.chat.completions.create(
+                model=model, max_tokens=max_tokens,
+                messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            )
+            return resp.choices[0].message.content.strip()
+        except Exception as e:
+            if "401" in str(e) or "authentication" in str(e).lower() or "invalid" in str(e).lower():
+                print(f"[ai] Kimi auth failed ({e}), falling back to Anthropic", flush=True)
+                provider, key = "anthropic", BOT_ANTHROPIC_KEY
+                model = DEFAULT_TEXT_MODEL["anthropic"]
+            else:
+                raise
 
     if provider == "anthropic":
         client = _anthropic_client(key)
