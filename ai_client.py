@@ -15,6 +15,7 @@ import os, sys
 from config import BOT_ANTHROPIC_KEY, BOT_OPENAI_KEY, BOT_OPENROUTER_KEY, BOT_KIMI_KEY
 
 KIMI_BASE_URL = "https://api.moonshot.cn/v1"
+_kimi_dead = False  # set True on first 401 so we stop retrying every call
 
 DEFAULT_VISION_MODEL = {
     "anthropic":  "claude-sonnet-4-6",
@@ -77,20 +78,27 @@ def text_call(cfg: dict, system: str, user: str, max_tokens: int, model: str | N
     model = model or DEFAULT_TEXT_MODEL.get(provider, DEFAULT_TEXT_MODEL["anthropic"])
 
     if provider == "kimi":
-        try:
-            client = _openai_client(key, base_url=KIMI_BASE_URL)
-            resp = client.chat.completions.create(
-                model=model, max_tokens=max_tokens,
-                messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-            )
-            return resp.choices[0].message.content.strip()
-        except Exception as e:
-            if "401" in str(e) or "authentication" in str(e).lower() or "invalid" in str(e).lower():
-                print(f"[ai] Kimi auth failed ({e}), falling back to Anthropic", flush=True)
-                provider, key = "anthropic", BOT_ANTHROPIC_KEY
-                model = DEFAULT_TEXT_MODEL["anthropic"]
-            else:
-                raise
+        global _kimi_dead
+        if _kimi_dead:
+            print("[ai] Kimi key known-dead, skipping to Anthropic", flush=True)
+            provider, key = "anthropic", BOT_ANTHROPIC_KEY
+            model = DEFAULT_TEXT_MODEL["anthropic"]
+        else:
+            try:
+                client = _openai_client(key, base_url=KIMI_BASE_URL)
+                resp = client.chat.completions.create(
+                    model=model, max_tokens=max_tokens,
+                    messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+                )
+                return resp.choices[0].message.content.strip()
+            except Exception as e:
+                if "401" in str(e) or "authentication" in str(e).lower() or "invalid" in str(e).lower():
+                    _kimi_dead = True
+                    print(f"[ai] Kimi 401 — key dead, switching to Anthropic for this session", flush=True)
+                    provider, key = "anthropic", BOT_ANTHROPIC_KEY
+                    model = DEFAULT_TEXT_MODEL["anthropic"]
+                else:
+                    raise
 
     if provider == "anthropic":
         client = _anthropic_client(key)

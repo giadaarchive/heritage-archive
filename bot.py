@@ -127,6 +127,39 @@ _date_override: dict[int, str] = {}
 _pending: dict[int, dict] = {}          # images waiting for date picker
 _media_groups: dict[str, dict] = {}     # album buffers
 
+_SESSION_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "sessions.json")
+
+
+def _save_sessions() -> None:
+    """Persist sessions to disk so buttons survive bot restarts."""
+    try:
+        tmp = {}
+        for uid, s in _sessions.items():
+            entry = {k: v for k, v in s.items() if k != "all_images"}
+            entry["all_images_b64"] = [base64.b64encode(b).decode() for b in s.get("all_images", [])]
+            tmp[str(uid)] = entry
+        with open(_SESSION_FILE, "w") as f:
+            json.dump(tmp, f)
+    except Exception as e:
+        print(f"[sessions] save error: {e}", flush=True)
+
+
+def _load_sessions() -> None:
+    """Load persisted sessions on startup."""
+    if not os.path.exists(_SESSION_FILE):
+        return
+    try:
+        with open(_SESSION_FILE) as f:
+            data = json.load(f)
+        for uid_str, s in data.items():
+            imgs = [base64.b64decode(b) for b in s.pop("all_images_b64", [])]
+            s["all_images"] = imgs
+            _sessions[int(uid_str)] = s
+        if _sessions:
+            print(f"[sessions] restored {len(_sessions)} in-progress session(s)", flush=True)
+    except Exception as e:
+        print(f"[sessions] load error: {e}", flush=True)
+
 
 # ── Registration wizard ───────────────────────────────────────────────────────
 
@@ -865,6 +898,7 @@ async def _run_ai_inner(msg, eff_msg, cfg, user_id, all_images, img_hash, outfit
         "always_worn_decisions": always_decisions,
         "extra_items": [],
     }
+    _save_sessions()
 
     matched = sum(1 for r in results if r["status"] == "matched")
     ambiguous = sum(1 for r in results if r["status"] == "ambiguous")
@@ -999,6 +1033,7 @@ def _build_summary(session: dict) -> str:
 
 
 async def _show_next_item(message, session: dict, user_id: int):
+    _save_sessions()  # capture any decision updates before advancing
     results = session["results"]
     decisions = session["decisions"]
 
@@ -1010,6 +1045,7 @@ async def _show_next_item(message, session: dict, user_id: int):
                                   reply_markup=keyboard, disable_web_page_preview=True)
             except TgNetworkError:
                 _sessions.pop(user_id, None)
+                _save_sessions()
             return
 
     # All decided — show summary
@@ -1141,6 +1177,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "cancel":
         _sessions.pop(user_id, None)
+        _save_sessions()
         await _safe_edit(query, "Cancelled.")
         return
 
@@ -1270,6 +1307,7 @@ async def handle_add_pick_callback(update: Update, context: ContextTypes.DEFAULT
     item_name = item["name"] if item else item_id
     session.setdefault("extra_items", []).append({"item_id": item_id, "item_name": item_name})
     session.pop("adding_item", None)
+    _save_sessions()
     url = f"https://www.notion.so/{item_id.replace('-', '')}"
     await _safe_edit(query, f'➕ Added: <a href="{url}">{_esc(item_name)}</a>', parse_mode=ParseMode.HTML, disable_web_page_preview=True)
     summary = _build_summary(session)
@@ -1334,12 +1372,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     cfg = user_store.get(user_id)
     catalog = catalog_mod.load(cfg, user_id)
-    q = text.lower()
-    matches = [
-        i for i in catalog
-        if q in i["name"].lower() or q in i["sku"].lower()
-        or q in i.get("colour", "").lower() or q in i.get("designer", "").lower()
-    ][:8]
+    tokens = text.lower().split()
+
+    def _item_matches(item: dict) -> bool:
+        haystack = " ".join([
+            item.get("name", ""), item.get("sku", ""),
+            item.get("colour", ""), item.get("designer", ""),
+            item.get("type", ""), item.get("category", ""),
+        ]).lower()
+        return all(tok in haystack for tok in tokens)
+
+    matches = [i for i in catalog if _item_matches(i)][:8]
 
     if not matches:
         await update.message.reply_text(f"No results for '{_esc(text)}'. Try different keywords.")
@@ -1395,6 +1438,7 @@ async def _do_confirm(query, session: dict, user_id: int):
     if not item_ids:
         await _safe_edit(query, "No items approved. Nothing to log.")
         _sessions.pop(user_id, None)
+        _save_sessions()
         return
 
     # Save corrections
@@ -1453,6 +1497,7 @@ async def _do_confirm(query, session: dict, user_id: int):
         print(traceback.format_exc(), file=sys.stderr)
     finally:
         _sessions.pop(user_id, None)
+        _save_sessions()
 
 
 async def _generate_ootd_story(bot, chat_id: int, page_id: str, all_images: list[bytes], cfg: dict):
@@ -1530,6 +1575,7 @@ def main():
         sys.exit(1)
 
     _acquire_pidfile()
+    _load_sessions()
 
     app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
 
