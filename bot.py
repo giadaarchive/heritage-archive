@@ -722,8 +722,8 @@ async def _handle_photo_inner(update: Update, context: ContextTypes.DEFAULT_TYPE
     await _route_image(update, context, raw)
 
 
-async def _download(file_id: str, context: ContextTypes.DEFAULT_TYPE, label: str, retries: int = 3) -> bytes:
-    from telegram.error import TimedOut
+async def _download(file_id: str, context: ContextTypes.DEFAULT_TYPE, label: str, retries: int = 4) -> bytes:
+    from telegram.error import TimedOut, NetworkError
     last_err = None
     for attempt in range(1, retries + 1):
         try:
@@ -731,9 +731,11 @@ async def _download(file_id: str, context: ContextTypes.DEFAULT_TYPE, label: str
             buf = BytesIO()
             await f.download_to_memory(buf)
             return buf.getvalue()
-        except TimedOut as e:
+        except (TimedOut, NetworkError) as e:
             last_err = e
-            await asyncio.sleep(2 * attempt)
+            wait = 2 * attempt
+            print(f"[download] attempt {attempt} failed ({e!r}), retrying in {wait}s", flush=True)
+            await asyncio.sleep(wait)
     raise last_err
 
 
@@ -816,20 +818,31 @@ async def _run_ai_and_review(update, context, all_images, img_hash, outfit_date,
     await _safe_msg_edit(msg, f"📅 <b>{outfit_date}</b>\n\n🔍 Identifying items...", parse_mode=ParseMode.HTML)
 
     try:
+        await _run_ai_inner(msg, eff_msg, cfg, user_id, all_images, img_hash, outfit_date)
+    except Exception as e:
+        print(f"[ai_review] error: {e!r}\n{traceback.format_exc()}", flush=True)
+        try:
+            await _safe_msg_edit(msg, f"⚠️ Error: {e}", parse_mode=None)
+        except Exception:
+            pass
+
+
+async def _run_ai_inner(msg, eff_msg, cfg, user_id, all_images, img_hash, outfit_date):
+    try:
         catalog = catalog_mod.load(cfg, user_id)
     except Exception as e:
-        await msg.edit_text(f"Failed to load your wardrobe: {e}")
+        await _safe_msg_edit(msg, f"Failed to load your wardrobe: {e}")
         return
 
     primary_resized = _resize(all_images[0])
     image_b64 = base64.standard_b64encode(primary_resized).decode()
 
     try:
-        match_output = await asyncio.get_event_loop().run_in_executor(
+        match_output = await asyncio.get_running_loop().run_in_executor(
             None, vision_mod.run_matching, cfg, user_id, image_b64, catalog, img_hash
         )
     except Exception as e:
-        await msg.edit_text(f"AI matching failed: {e}")
+        await _safe_msg_edit(msg, f"AI matching failed: {e}")
         print(traceback.format_exc(), file=sys.stderr)
         return
 
@@ -837,7 +850,7 @@ async def _run_ai_and_review(update, context, all_images, img_hash, outfit_date,
     season = match_output["season"]
 
     if not results:
-        await msg.edit_text("Could not identify any items. Try a clearer photo.")
+        await _safe_msg_edit(msg, "Could not identify any items. Try a clearer photo.")
         return
 
     always_decisions = _build_always_worn_decisions(user_store.get_always_worn(user_id), catalog)
@@ -858,7 +871,8 @@ async def _run_ai_and_review(update, context, all_images, img_hash, outfit_date,
     unidentified = sum(1 for r in results if r["status"] == "unidentified")
     photo_note = f" · {len(all_images)} photos" if len(all_images) > 1 else ""
 
-    await msg.edit_text(
+    await _safe_msg_edit(
+        msg,
         f"📅 <b>{outfit_date}</b>{photo_note} · <b>{season}</b>\n"
         f"Found <b>{len(results)} item(s)</b> — {matched} matched, {ambiguous} maybe, {unidentified} unknown.",
         parse_mode=ParseMode.HTML,
@@ -1491,10 +1505,31 @@ def _story_from_images(all_images: list[bytes], cfg: dict) -> str | None:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+_PIDFILE = os.path.join(os.path.dirname(__file__), "bot.pid")
+
+
+def _acquire_pidfile():
+    if os.path.exists(_PIDFILE):
+        try:
+            old_pid = int(open(_PIDFILE).read().strip())
+            os.kill(old_pid, 0)  # check if process exists
+            print(f"[pidfile] killing stale instance (PID {old_pid})", flush=True)
+            os.kill(old_pid, 15)  # SIGTERM
+            import time as _t; _t.sleep(1)
+        except (ProcessLookupError, ValueError):
+            pass  # already gone
+    with open(_PIDFILE, "w") as f:
+        f.write(str(os.getpid()))
+    import atexit
+    atexit.register(lambda: os.path.exists(_PIDFILE) and os.remove(_PIDFILE))
+
+
 def main():
     if not config.TELEGRAM_BOT_TOKEN:
         print("ERROR: TELEGRAM_BOT_TOKEN not set. Add it to your .env file.", file=sys.stderr)
         sys.exit(1)
+
+    _acquire_pidfile()
 
     app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
 
@@ -1525,6 +1560,16 @@ def main():
             days=(1,),  # 0=Mon 1=Tue 2=Wed 3=Thu 4=Fri 5=Sat 6=Sun
             name="ideas_digest",
         )
+
+    async def _error_handler(update, context):
+        print(f"[ptb_error] {context.error!r}\n{traceback.format_exc()}", flush=True)
+        if update and update.effective_message:
+            try:
+                await update.effective_message.reply_text(f"⚠️ {context.error}")
+            except Exception:
+                pass
+
+    app.add_error_handler(_error_handler)
 
     print("Heritage Archive bot running...", flush=True)
     app.run_polling(drop_pending_updates=True)
