@@ -1554,17 +1554,35 @@ _PIDFILE = os.path.join(os.path.dirname(__file__), "bot.pid")
 
 
 def _acquire_pidfile():
-    if os.path.exists(_PIDFILE):
-        try:
-            old_pid = int(open(_PIDFILE).read().strip())
-            os.kill(old_pid, 0)  # check if process exists
-            print(f"[pidfile] killing stale instance (PID {old_pid})", flush=True)
-            os.kill(old_pid, 15)  # SIGTERM
-            import time as _t; _t.sleep(1)
-        except (ProcessLookupError, ValueError):
-            pass  # already gone
+    # Kill every other bot.py process, not just the one in the pidfile —
+    # instances started before the pidfile existed would otherwise survive
+    # and cause getUpdates conflicts + split session state.
+    import subprocess, time as _t
+    me = os.getpid()
+    script = os.path.abspath(__file__)
+    try:
+        out = subprocess.run(["pgrep", "-f", os.path.basename(script)],
+                             capture_output=True, text=True).stdout
+        for line in out.split():
+            pid = int(line)
+            if pid == me:
+                continue
+            try:
+                cmd = subprocess.run(["ps", "-p", str(pid), "-o", "command="],
+                                     capture_output=True, text=True).stdout
+                # only kill processes actually running this script
+                if script not in cmd and "heritage-archive" not in cmd:
+                    continue
+                print(f"[pidfile] killing other instance (PID {pid})", flush=True)
+                os.kill(pid, 9)
+            except (ProcessLookupError, ValueError):
+                pass
+        if out.strip():
+            _t.sleep(1)
+    except Exception as e:
+        print(f"[pidfile] sweep error: {e}", flush=True)
     with open(_PIDFILE, "w") as f:
-        f.write(str(os.getpid()))
+        f.write(str(me))
     import atexit
     atexit.register(lambda: os.path.exists(_PIDFILE) and os.remove(_PIDFILE))
 
